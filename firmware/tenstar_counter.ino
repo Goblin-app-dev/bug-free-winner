@@ -56,8 +56,8 @@ Power Optimizations:
   - Smoothing: Alpha 0.3 (was 0.2) - compensates for longer sample interval
 
 Battery Calibration Mode:
-  - Set counter to 88 to enable data logging
-  - Set counter to 12 to dump log file to Serial Monitor
+  - Calibration trigger at counter=88 is temporarily disabled
+  - Log dump trigger at counter=12 is temporarily disabled (to avoid long blocking dump)
   - Logs battery voltage data to Serial and SPIFFS (/battery_cal.csv)
   - Data persists across reboots
   - Use Serial Monitor at 115200 baud to view real-time data
@@ -68,6 +68,7 @@ Charging Detection:
   - Full battery sampling runs at 800ms when charging, 2 minutes when not
   - A lightweight 2s fast-probe checks for plug/unplug transitions between full samples
   - On detected transition, firmware forces an immediate full sample and updates cadence
+  - While charging, displayed battery % is frozen to avoid misleading voltage-based jumps
 
 ===============================================================================
 */
@@ -143,8 +144,13 @@ static const unsigned long LOOP_DELAY_MS = 20;  // 50 Hz polling (was 10ms/100Hz
    Battery Calibration Configuration
    -------------------------------------------------------------- */
 
-static const int CALIBRATION_MODE_VALUE = 88;   // Set counter to 88 to enable logging
-static const int LOG_DUMP_MODE_VALUE = 12;      // Set counter to 12 to dump log to Serial
+// NOTE: Calibration trigger at counter=88 is temporarily disabled.
+// Keep symbols/functions nearby for easy re-enable later.
+// static const int CALIBRATION_MODE_VALUE = 88;   // Set counter to 88 to enable logging
+// NOTE: Log dump trigger is temporarily disabled to avoid long blocking Serial dumps
+// that can appear as a freeze when counter reaches 12. Keep constant/function code
+// nearby for easy re-enable later.
+// static const int LOG_DUMP_MODE_VALUE = 12;      // Set counter to 12 to dump log to Serial
 static const char* CALIBRATION_FILE = "/battery_cal.csv";
 
 /* --------------------------------------------------------------
@@ -332,10 +338,10 @@ bool wasCharging = false;  // Track previous charging state for change detection
    Battery calibration state
    -------------------------------------------------------------- */
 
-bool calibrationModeActive = false;
+// bool calibrationModeActive = false;  // Temporarily disabled with calibration trigger
 bool calibrationFileInitialized = false;
 unsigned long calibrationSampleCount = 0;
-bool logDumpInProgress = false;
+// bool logDumpInProgress = false;  // Temporarily disabled with log dump feature
 
 /* --------------------------------------------------------------
    Charging animation state (ADVANCES ONLY ON SAMPLE)
@@ -370,9 +376,9 @@ int batteryPercentFromVoltage(float v);
 uint16_t batteryColor(int pct);
 bool isCharging();
 
-void initCalibrationFile();
-void logBatteryCalibration(uint32_t rawADC, uint32_t adcMv, float batVolts, int batPct, bool charging);
-void dumpCalibrationLog();
+// void initCalibrationFile();  // Temporarily disabled (see note near CALIBRATION_MODE_VALUE)
+// void logBatteryCalibration(uint32_t rawADC, uint32_t adcMv, float batVolts, int batPct, bool charging);
+// void dumpCalibrationLog();  // Temporarily disabled (see note near LOG_DUMP_MODE_VALUE)
 
 static inline void ensureAnimSprite();
 static void renderBatteryStrip();
@@ -622,6 +628,13 @@ bool isCharging() {
    Called once when calibration mode is first activated.
    -------------------------------------------------------------- */
 
+/*
+ * TEMPORARILY DISABLED
+ * --------------------
+ * Calibration-mode trigger (counter=88) is currently disabled, so this helper
+ * is commented out to prevent accidental reactivation through stale call sites.
+ */
+/*
 void initCalibrationFile() {
   if (calibrationFileInitialized) return;
 
@@ -648,6 +661,7 @@ void initCalibrationFile() {
 
   calibrationFileInitialized = true;
 }
+*/
 
 /* --------------------------------------------------------------
    Log battery calibration data
@@ -659,6 +673,12 @@ void initCalibrationFile() {
    timestamp_ms, sample_num, raw_adc, adc_mv, battery_volts, battery_pct, charging
    -------------------------------------------------------------- */
 
+/*
+ * TEMPORARILY DISABLED
+ * --------------------
+ * Calibration-mode trigger (counter=88) is currently disabled.
+ */
+/*
 void logBatteryCalibration(uint32_t rawADC, uint32_t adcMv, float batVolts, int batPct, bool charging) {
   unsigned long timestamp = millis();
   calibrationSampleCount++;
@@ -686,15 +706,25 @@ void logBatteryCalibration(uint32_t rawADC, uint32_t adcMv, float batVolts, int 
   // Print to Serial for real-time monitoring
   Serial.println(logLine);
 }
+*/
 
 /* --------------------------------------------------------------
    Dump calibration log to Serial Monitor
 
    Reads the entire calibration log file and outputs it to Serial.
-   Called when counter is set to LOG_DUMP_MODE_VALUE (12).
-   Useful for retrieving data after device reboot/brownout.
+   This path is currently disabled to avoid long blocking serial dumps
+   that can appear as a freeze on device.
    -------------------------------------------------------------- */
 
+/*
+ * TEMPORARILY DISABLED
+ * --------------------
+ * Full Serial dump can be very large and blocks execution long enough to look
+ * like a freeze on device when counter reaches the trigger value.
+ *
+ * Keep this function in source for quick future re-enable.
+ */
+/*
 void dumpCalibrationLog() {
   Serial.println("\n");
   Serial.println("============================================================");
@@ -747,6 +777,7 @@ void dumpCalibrationLog() {
   Serial.println("============================================================");
   Serial.println();
 }
+*/
 
 /* --------------------------------------------------------------
    Cubic ease-out function
@@ -1060,8 +1091,8 @@ void setup() {
   renderBatteryStrip();
 
   Serial.println("=== Setup Complete ===");
-  Serial.println("Set counter to 88 to enable battery calibration logging");
-  Serial.println("Set counter to 12 to dump calibration log to Serial");
+  Serial.println("Calibration trigger (counter=88) is temporarily disabled");
+  Serial.println("Calibration log dump trigger is temporarily disabled");
   Serial.println();
 }
 
@@ -1086,30 +1117,13 @@ void loop() {
       lastValueChange = now;
       drawNumber();
 
-      // Check if entering calibration mode (88)
-      if (displayValue == CALIBRATION_MODE_VALUE && !calibrationModeActive) {
-        calibrationModeActive = true;
-        initCalibrationFile();
-        Serial.println("\n*** CALIBRATION MODE ACTIVATED ***");
-        Serial.println("Battery data will be logged on each sample");
-        Serial.println("Data saved to: /battery_cal.csv");
-        Serial.println("**********************************\n");
-      }
+      // NOTE: Calibration trigger intentionally disabled for now to prevent
+      // accidental high-volume logging while investigating freeze issues.
 
-      // Check if entering log dump mode (12)
-      if (displayValue == LOG_DUMP_MODE_VALUE && !logDumpInProgress) {
-        logDumpInProgress = true;
-        dumpCalibrationLog();
-        logDumpInProgress = false;
-      }
+      // NOTE: Log dump trigger intentionally disabled for now to prevent
+      // long blocking serial output (can appear as freeze at value 12).
 
-      // Check if exiting calibration mode
-      if (displayValue != CALIBRATION_MODE_VALUE && calibrationModeActive) {
-        calibrationModeActive = false;
-        Serial.println("\n*** CALIBRATION MODE DEACTIVATED ***");
-        Serial.printf("Total samples logged: %lu\n", calibrationSampleCount);
-        Serial.println("************************************\n");
-      }
+      // NOTE: Calibration mode exit path disabled together with trigger.
     }
     topHeld = false;
   }
@@ -1132,13 +1146,7 @@ void loop() {
       lastValueChange = now;
       drawNumber();
 
-      // Check if exiting calibration mode
-      if (displayValue != CALIBRATION_MODE_VALUE && calibrationModeActive) {
-        calibrationModeActive = false;
-        Serial.println("\n*** CALIBRATION MODE DEACTIVATED ***");
-        Serial.printf("Total samples logged: %lu\n", calibrationSampleCount);
-        Serial.println("************************************\n");
-      }
+      // NOTE: Calibration mode exit path disabled together with trigger.
     }
     bottomPressed = false;
   }
@@ -1188,32 +1196,29 @@ void loop() {
     uint32_t rawADC, adcMv;
     float newV;
 
-    if (calibrationModeActive) {
-      // Use detailed reading for calibration logging
-      readBatteryVoltageDetailed(rawADC, adcMv, newV);
-    } else {
-      // Use simple reading for normal operation
-      newV = readBatteryVoltage();
-      rawADC = 0;  // Not needed in normal mode
-      adcMv = 0;   // Not needed in normal mode
-    }
+    // Calibration logging path is temporarily disabled; keep normal read path only.
+    newV = readBatteryVoltage();
+    rawADC = 0;
+    adcMv = 0;
 
     int newPct = batteryPercentFromVoltage(newV);
 
     batteryVoltage = newV;
-    batteryPct = newPct;
+    charging = isCharging();
+
+    // Charging policy: freeze displayed battery percent while charging.
+    // Voltage can rise early during charge and look "too full" too soon.
+    if (!charging) {
+      batteryPct = newPct;
+    }
 
     // Exponential moving average for smooth visual transitions
     batteryFillSmooth = batteryFillSmooth * (1.0f - BATTERY_SMOOTH_ALPHA) + (float)batteryPct * BATTERY_SMOOTH_ALPHA;
 
-    // Update charging state after reading voltage
-    charging = isCharging();
+    // Update charging state tracking after applying sample results
     wasCharging = charging;
 
-    // Log calibration data if in calibration mode
-    if (calibrationModeActive) {
-      logBatteryCalibration(rawADC, adcMv, newV, newPct, charging);
-    }
+    // NOTE: Calibration logging call disabled with calibration trigger.
 
     // Advance charging animation phase proportional to time elapsed
     if (charging) {
