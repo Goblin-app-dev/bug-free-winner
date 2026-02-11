@@ -64,9 +64,10 @@ Battery Calibration Mode:
   - Retrieve log file after discharge cycle completes
 
 Charging Detection:
-  - Checks voltage on every battery sample to detect charging state changes
-  - Responds immediately when power is plugged in or unplugged
-  - Adjusts sample rate automatically (800ms when charging, 2 min when not)
+  - Primary detection uses battery voltage threshold (>4.15V heuristic)
+  - Full battery sampling runs at 800ms when charging, 2 minutes when not
+  - A lightweight 2s fast-probe checks for plug/unplug transitions between full samples
+  - On detected transition, firmware forces an immediate full sample and updates cadence
 
 ===============================================================================
 */
@@ -75,7 +76,7 @@ Charging Detection:
   Tenstar ESP32 Modern Counter - Production Firmware
   --------------------------------------------------
   Boot sequence: white mask → BL off → clear to black → render first frame → BL on
-  Battery sampling: Redraws ONLY when battery sampling occurs (no extra animation frames)
+  Battery UI redraw: Occurs ONLY on full battery sample ticks (fast-probe does not redraw)
   Non-charging sampling: Always 2 minutes regardless of battery level
   Charging animation: Phase advances on each sample tick (proportional to sample interval)
 */
@@ -134,9 +135,6 @@ static const unsigned long BOOT_FRAME_MS = 33;  // ~30 FPS for boot animation
 static const uint32_t BAT_READ_MS_CHARGING = 800;     // Charging: ~1.25 Hz sampling
 static const uint32_t BAT_READ_MS_NORMAL   = 120000;  // Non-charging: 2 minutes (was 60000)
 static const uint32_t CHARGING_PROBE_MS    = 2000;    // Lightweight charging-state probe interval
-
-// LED timing
-static const unsigned long LOW_BAT_BLINK_INTERVAL_MS = 1000;  // 1 Hz blink when ≤10%
 
 // Main loop timing (OPTIMIZED for power savings)
 static const unsigned long LOOP_DELAY_MS = 20;  // 50 Hz polling (was 10ms/100Hz)
@@ -239,7 +237,7 @@ static const float CHARGING_DETECT_VOLTAGE = 4.15f;  // Heuristic charging detec
 
 static const int BATTERY_LEVEL_HEALTHY = 60;  // Above this: healthy color
 static const int BATTERY_LEVEL_MID = 30;      // Above this: warning color
-static const int BATTERY_LEVEL_LOW = 10;      // At or below: critical + LED blink
+static const int BATTERY_LEVEL_LOW = 10;      // At or below: critical
 
 /* --------------------------------------------------------------
    Color Definitions (RGB888)
@@ -344,13 +342,6 @@ bool logDumpInProgress = false;
    -------------------------------------------------------------- */
 
 float chargingPhase = 0.0f;
-
-/* --------------------------------------------------------------
-   Low-battery LED blink state
-   -------------------------------------------------------------- */
-
-unsigned long lowBatLedLastToggle = 0;
-bool lowBatLedState = false;
 
 /* --------------------------------------------------------------
    First draw flag for optimization
@@ -1239,18 +1230,6 @@ void loop() {
 
     // Redraw battery UI (only happens here, at sample rate)
     renderBatteryStrip();
-  }
-
-  // --- Low battery LED indicator (1 Hz blink) ---
-  if (batteryPct <= BATTERY_LEVEL_LOW) {
-    if (now - lowBatLedLastToggle >= LOW_BAT_BLINK_INTERVAL_MS) {
-      lowBatLedLastToggle = now;
-      lowBatLedState = !lowBatLedState;
-      digitalWrite(LED_PIN, lowBatLedState ? HIGH : LOW);
-    }
-  } else {
-    lowBatLedState = false;
-    digitalWrite(LED_PIN, LOW);
   }
 
   delay(LOOP_DELAY_MS);
