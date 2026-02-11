@@ -225,15 +225,29 @@ static const int NUM_DISPLAY_CENTER_Y = 67;   // Vertical center for number
 static const int DEFAULT_START_VAL = 10;  // Initial counter value on boot
 
 /* --------------------------------------------------------------
-   Battery Voltage Thresholds (volts)
+   Battery Voltage Mapping (calibrated for current battery)
    -------------------------------------------------------------- */
 
-static const float VOLTAGE_MAX = 4.20f;  // Maximum battery voltage (100%)
-static const float VOLTAGE_90  = 4.00f;  // 90% threshold
-static const float VOLTAGE_75  = 3.85f;  // 75% threshold
-static const float VOLTAGE_50  = 3.70f;  // 50% threshold
-static const float VOLTAGE_25  = 3.55f;  // 25% threshold
-static const float VOLTAGE_10  = 3.40f;  // 10% threshold
+static const float VOLTAGE_MAX = 4.20f;  // Hard clamp max safe voltage
+
+struct BatteryAnchor {
+  float volts;
+  int pct;
+};
+
+// Runtime-calibrated anchors for the currently-installed battery.
+// Keep calibration capture/dump tooling disabled for production runtime,
+// but retain those functions in source so this table can be regenerated
+// and replaced when battery chemistry/aging changes.
+static const BatteryAnchor SOC_TABLE[] = {
+  {4.20f, 100},
+  {4.00f,  75},
+  {3.85f,  50},
+  {3.70f,  25},
+  {3.55f,  10},
+  {3.40f,   0}
+};
+static const int SOC_TABLE_COUNT = sizeof(SOC_TABLE) / sizeof(SOC_TABLE[0]);
 
 static const float CHARGING_DETECT_VOLTAGE = 4.15f;  // Heuristic charging detection
 
@@ -581,12 +595,23 @@ void readBatteryVoltageDetailed(uint32_t &rawADC, uint32_t &adcMillivolts, float
    -------------------------------------------------------------- */
 
 int batteryPercentFromVoltage(float v) {
-  if (v >= VOLTAGE_MAX) return 100;
-  if (v >= VOLTAGE_90)  return 90;
-  if (v >= VOLTAGE_75)  return 75;
-  if (v >= VOLTAGE_50)  return 50;
-  if (v >= VOLTAGE_25)  return 25;
-  if (v >= VOLTAGE_10)  return 10;
+  if (v >= SOC_TABLE[0].volts) return SOC_TABLE[0].pct;
+  if (v <= SOC_TABLE[SOC_TABLE_COUNT - 1].volts) return SOC_TABLE[SOC_TABLE_COUNT - 1].pct;
+
+  for (int i = 0; i < SOC_TABLE_COUNT - 1; i++) {
+    const BatteryAnchor &hi = SOC_TABLE[i];
+    const BatteryAnchor &lo = SOC_TABLE[i + 1];
+
+    if (v <= hi.volts && v >= lo.volts) {
+      float spanV = hi.volts - lo.volts;
+      if (spanV <= 0.0f) return lo.pct;
+
+      float t = (v - lo.volts) / spanV;
+      float pctF = (float)lo.pct + t * (float)(hi.pct - lo.pct);
+      return (int)(pctF + 0.5f);
+    }
+  }
+
   return 0;
 }
 
