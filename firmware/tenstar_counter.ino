@@ -45,8 +45,8 @@ Other:
 Firmware Notes:
   - No brightness menu, no PWM dimming (unreliable on this board).
   - Backlight is ON during operation.
-  - Long-hold on bottom button enters deep sleep with EXT0 wake enabled on GPIO0.
-  - Pressing bottom button wakes the board; no side reset needed.
+  - Long-hold on bottom button enters deep sleep.
+  - Wake is on top button (GPIO35, EXT0 active LOW); side reset not required.
   - Backlight polarity: HIGH = ON, LOW = OFF (ACTIVE HIGH)
 
 Power Optimizations:
@@ -83,13 +83,13 @@ Charging Detection:
   Implemented strategy:
   - Enter deep sleep on long hold.
   - Keep backlight latched OFF during sleep.
-  - Enable EXT0 wake on bottom button GPIO0 (active LOW).
+  - Enable EXT0 wake on top button GPIO35 (active LOW).
 
   Why this pin:
   - EXT0 supports one wake pin on classic ESP32.
-  - GPIO0 has an internal pull-up, making LOW-edge button wake robust.
-  - Top button GPIO35 has no internal pull-up, so it is less reliable
-    as the sole deep-sleep wake source without extra hardware biasing.
+  - GPIO0 is a boot strap pin; waking while it is LOW can land in ROM
+    download mode instead of normal app boot on some boards.
+  - GPIO35 avoids strap-mode resets for wake, but needs external pull-up.
 */
 
 /*
@@ -120,7 +120,7 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
-#define SLEEP_WAKE_PIN BTN_BOTTOM  // Proven EXT0 wake source: GPIO0 (active LOW)
+#define SLEEP_WAKE_PIN BTN_TOP  // EXT0 wake source: GPIO35 (active LOW, external pull-up required)
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
@@ -422,7 +422,7 @@ void bootAnimationSprite();
 static void showBootWhiteMaskHardCut(uint16_t holdMs);
 
 static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel);
-void enterDeepSleep();  // Deep sleep with EXT0 wake enabled on GPIO0 (bottom button)
+void enterDeepSleep();  // Deep sleep with EXT0 wake enabled on GPIO35 (top button)
 
 /* --------------------------------------------------------------
    Pre-setup backlight kill (prevents flash on power-up)
@@ -1028,7 +1028,10 @@ void bootAnimationSprite() {
    configure the wake pin in RTC domain immediately before sleep so
    pull state remains valid while digital GPIO domain is powered down.
 
-   wakeLevel = 0 => keep pull-up enabled, wake when button pulls LOW.
+   wakeLevel = 0 => wake when button pulls LOW.
+
+   Note: GPIO34-39 do not support internal pull-up/down in RTC domain;
+   for those pins (including GPIO35) an external pull-up is required.
    -------------------------------------------------------------- */
 
 static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel) {
@@ -1036,12 +1039,17 @@ static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel) {
   rtc_gpio_init(wakePin);
   rtc_gpio_set_direction(wakePin, RTC_GPIO_MODE_INPUT_ONLY);
 
-  if (wakeLevel == 0) {
-    rtc_gpio_pullup_en(wakePin);
-    rtc_gpio_pulldown_dis(wakePin);
-  } else {
-    rtc_gpio_pullup_dis(wakePin);
-    rtc_gpio_pulldown_en(wakePin);
+  // RTC GPIO 34-39 have no internal pull resistor capability.
+  bool hasRtcPulls = (wakePin <= GPIO_NUM_33);
+
+  if (hasRtcPulls) {
+    if (wakeLevel == 0) {
+      rtc_gpio_pullup_en(wakePin);
+      rtc_gpio_pulldown_dis(wakePin);
+    } else {
+      rtc_gpio_pullup_dis(wakePin);
+      rtc_gpio_pulldown_en(wakePin);
+    }
   }
 }
 
@@ -1049,9 +1057,9 @@ static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel) {
    Long-hold deep-sleep entry with wake enabled
 
    Wake source is intentionally NOT disabled:
-   - Bottom button (GPIO0) wakes via EXT0 on LOW
-   - Top button (GPIO35) is not used for wake because EXT0 accepts a
-     single RTC pin and GPIO35 has no internal pull-up on this board.
+   - Top button (GPIO35) wakes via EXT0 on LOW
+   - Bottom button (GPIO0) is avoided for wake because it is a boot
+     strap pin and LOW-at-reset can force ROM download mode.
    -------------------------------------------------------------- */
 
 void enterDeepSleep() {
@@ -1072,7 +1080,7 @@ void enterDeepSleep() {
   gpio_hold_en((gpio_num_t)TFT_BL);
   gpio_deep_sleep_hold_en();
 
-  // Reconfigure wake sources and enable EXT0 on bottom button.
+  // Reconfigure wake sources and enable EXT0 on top button.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   configureWakePinForExt0((gpio_num_t)SLEEP_WAKE_PIN, 0);
   esp_sleep_enable_ext0_wakeup((gpio_num_t)SLEEP_WAKE_PIN, 0);
