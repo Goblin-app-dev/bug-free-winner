@@ -118,7 +118,7 @@ static const int SCREEN_H = 135;  // Display height after rotation=1
 
 // Button timing
 static const unsigned long BUTTON_SHORT_PRESS_MAX_MS = 800;   // Max duration for short press
-static const unsigned long BUTTON_LONG_PRESS_MIN_MS  = 2000;  // Min duration for sleep trigger
+static const unsigned long BUTTON_LONG_PRESS_MIN_MS  = 2000;  // Min hold duration for power-off (deep sleep)
 
 // UI behavior timing
 static const unsigned long LOCK_DELAY_MS = 5000;  // Idle time before max value locks
@@ -128,7 +128,7 @@ static const uint16_t WHITE_MASK_HOLD_MS = 300;  // Duration to show white boot 
 static const uint16_t BL_TRANSITION_DELAY_MS = 10;  // Delay during BL on/off transitions
 static const uint16_t FRAME_SETTLE_DELAY_MS = 10;   // Delay for display buffer to settle
 static const uint16_t SETUP_INIT_DELAY_MS = 100;    // Initial setup stabilization delay
-static const uint16_t SLEEP_ENTRY_DELAY_MS = 50;    // Delay before reset
+static const uint16_t SLEEP_ENTRY_DELAY_MS = 50;    // Delay before entering deep sleep power-off
 
 // Animation timing
 static const unsigned long BOOT_FRAME_MS = 33;  // ~30 FPS for boot animation
@@ -401,7 +401,7 @@ static void renderBatteryStrip();
 void bootAnimationSprite();
 static void showBootWhiteMaskHardCut(uint16_t holdMs);
 
-void enterDeepSleep();
+void enterDeepSleep();  // Power-off path: deep sleep with wake sources disabled
 
 /* --------------------------------------------------------------
    Pre-setup backlight kill (prevents flash on power-up)
