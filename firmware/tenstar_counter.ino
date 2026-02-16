@@ -28,10 +28,10 @@ Buttons:
   - TOP button    → GPIO35
       * Input-only pin
       * NO internal pull-up (external pull-up required)
-      * Used for increment + EXT0 deep-sleep wake
+      * Used for increment + deep-sleep wake (EXT1, active LOW)
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
-      * Used for decrement + long-hold sleep entry
+      * Used for decrement + long-hold sleep entry + deep-sleep wake (EXT1, active LOW)
 
 Battery:
   - ADC pin → GPIO34
@@ -1002,12 +1002,18 @@ void bootAnimationSprite() {
 /* --------------------------------------------------------------
    Deep sleep entry
 
-   Wake source: BTN_TOP (GPIO35) via EXT0 wakeup on LOW.
+   Wake source: BTN_TOP and BTN_BOTTOM via EXT1 wakeup (ANY_LOW).
    Backlight is held LOW during sleep to prevent MOSFET float.
    -------------------------------------------------------------- */
 
 void enterDeepSleep() {
   tft.fillScreen(TFT_BLACK);
+
+  // Avoid instant wake re-trigger when sleep is entered from a held button.
+  while (digitalRead(BTN_TOP) == LOW || digitalRead(BTN_BOTTOM) == LOW) {
+    delay(10);
+    yield();
+  }
 
   backlightOff();
   delay(SLEEP_ENTRY_DELAY_MS);
@@ -1020,7 +1026,8 @@ void enterDeepSleep() {
 
   // Configure wake source
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_TOP, 0);  // Wake on LOW
+  uint64_t wakeMask = (1ULL << BTN_TOP) | (1ULL << BTN_BOTTOM);
+  esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);  // Wake on button press (LOW)
 
   esp_deep_sleep_start();
 }
