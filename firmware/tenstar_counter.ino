@@ -31,7 +31,7 @@ Buttons:
       * Used for increment
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
-      * Used for decrement + long-hold sleep entry + deep-sleep wake (EXT0, active LOW)
+      * Used for decrement + long-hold reset
 
 Battery:
   - ADC pin → GPIO34
@@ -44,8 +44,8 @@ Other:
 
 Firmware Notes:
   - No brightness menu, no PWM dimming (unreliable on this board).
-  - Backlight is ON during operation, forced OFF + GPIO-hold in deep sleep.
-  - GPIO4 is held LOW during deep sleep so the BL MOSFET cannot float ON.
+  - Backlight is ON during operation.
+  - Long-hold on bottom button performs software reset (side reset button replacement).
   - Backlight polarity: HIGH = ON, LOW = OFF (ACTIVE HIGH)
 
 Power Optimizations:
@@ -91,7 +91,6 @@ Charging Detection:
 #include "esp_adc_cal.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
-#include "driver/rtc_io.h"
 #include "SPIFFS.h"
 #include "FS.h"
 
@@ -101,7 +100,6 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
-#define SLEEP_WAKE_PIN BTN_BOTTOM  // EXT0 wake source (active LOW). GPIO0 is more reliable due to internal pull-up.
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
@@ -129,7 +127,7 @@ static const uint16_t WHITE_MASK_HOLD_MS = 300;  // Duration to show white boot 
 static const uint16_t BL_TRANSITION_DELAY_MS = 10;  // Delay during BL on/off transitions
 static const uint16_t FRAME_SETTLE_DELAY_MS = 10;   // Delay for display buffer to settle
 static const uint16_t SETUP_INIT_DELAY_MS = 100;    // Initial setup stabilization delay
-static const uint16_t SLEEP_ENTRY_DELAY_MS = 50;    // Delay before entering deep sleep
+static const uint16_t SLEEP_ENTRY_DELAY_MS = 50;    // Delay before reset
 
 // Animation timing
 static const unsigned long BOOT_FRAME_MS = 33;  // ~30 FPS for boot animation
@@ -402,7 +400,6 @@ static void renderBatteryStrip();
 void bootAnimationSprite();
 static void showBootWhiteMaskHardCut(uint16_t holdMs);
 
-static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel);
 void enterDeepSleep();
 
 /* --------------------------------------------------------------
@@ -1003,39 +1000,18 @@ void bootAnimationSprite() {
 }
 
 /* --------------------------------------------------------------
-   EXT0 wake pin configuration
+   Long-hold reset entry
 
-   EXT0 wake works through RTC IO. Configure pull direction in RTC
-   domain so wake remains stable during deep sleep:
-   - Wake on LOW  => keep pin pulled HIGH
-   - Wake on HIGH => keep pin pulled LOW
-   -------------------------------------------------------------- */
-
-static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel) {
-  rtc_gpio_deinit(wakePin);
-  rtc_gpio_init(wakePin);
-  rtc_gpio_set_direction(wakePin, RTC_GPIO_MODE_INPUT_ONLY);
-
-  if (wakeLevel == 0) {
-    rtc_gpio_pullup_en(wakePin);
-    rtc_gpio_pulldown_dis(wakePin);
-  } else {
-    rtc_gpio_pullup_dis(wakePin);
-    rtc_gpio_pulldown_en(wakePin);
-  }
-}
-
-/* --------------------------------------------------------------
-   Deep sleep entry
-
-   Wake source: SLEEP_WAKE_PIN via EXT0 wakeup on LOW.
-   Backlight is held LOW during sleep to prevent MOSFET float.
+   This board currently relies on the side hardware reset button for
+   guaranteed wake/restart behavior. On boards where that button is
+   damaged/removed, long-hold on the bottom face button triggers a
+   software reset instead of deep sleep.
    -------------------------------------------------------------- */
 
 void enterDeepSleep() {
   tft.fillScreen(TFT_BLACK);
 
-  // Avoid instant wake re-trigger when sleep is entered from a held button.
+  // Avoid repeat triggers while button is still held.
   while (digitalRead(BTN_TOP) == LOW || digitalRead(BTN_BOTTOM) == LOW) {
     delay(10);
     yield();
@@ -1044,18 +1020,8 @@ void enterDeepSleep() {
   backlightOff();
   delay(SLEEP_ENTRY_DELAY_MS);
 
-  // Configure GPIO hold to maintain backlight OFF state
-  gpio_hold_dis((gpio_num_t)TFT_BL);
-  gpio_deep_sleep_hold_dis();
-  gpio_hold_en((gpio_num_t)TFT_BL);
-  gpio_deep_sleep_hold_en();
-
-  // Configure wake source
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  configureWakePinForExt0((gpio_num_t)SLEEP_WAKE_PIN, 0);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)SLEEP_WAKE_PIN, 0);  // Wake on LOW
-
-  esp_deep_sleep_start();
+  // Software reset path (requested): do not enter deep sleep.
+  esp_restart();
 }
 
 /* --------------------------------------------------------------
