@@ -28,17 +28,10 @@ Buttons:
   - TOP button    → GPIO35
       * Input-only pin
       * NO internal pull-up (external pull-up required)
-<<<<<<< codex/optimize-battery-sampling-and-logging
       * Used for increment + deep-sleep wake (EXT0, active LOW)
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
       * Used for decrement + long-hold sleep entry
-=======
-      * Used for increment
-  - BOTTOM button → GPIO0
-      * Internal pull-up enabled
-      * Used for decrement + long-hold sleep entry + deep-sleep wake (EXT0, active LOW)
->>>>>>> main
 
 Battery:
   - ADC pin → GPIO34
@@ -98,6 +91,7 @@ Charging Detection:
 #include "esp_adc_cal.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "SPIFFS.h"
 #include "FS.h"
 
@@ -107,11 +101,7 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
-<<<<<<< codex/optimize-battery-sampling-and-logging
 #define SLEEP_WAKE_PIN BTN_TOP  // EXT0 wake source (active LOW). Set to BTN_BOTTOM if preferred.
-=======
-#define SLEEP_WAKE_PIN BTN_BOTTOM  // EXT0 wake source (active LOW). Set to BTN_TOP if preferred.
->>>>>>> main
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
@@ -1037,7 +1027,13 @@ void enterDeepSleep() {
   gpio_deep_sleep_hold_en();
 
   // Configure wake source
+  // GPIO 35 is input-only with no internal pull-up; it must be explicitly
+  // switched to the RTC domain so the RTC controller can monitor its level
+  // during deep sleep.  Without rtc_gpio_init the pad stays in the digital
+  // domain and ext0 never fires.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  rtc_gpio_init((gpio_num_t)SLEEP_WAKE_PIN);
+  rtc_gpio_set_direction((gpio_num_t)SLEEP_WAKE_PIN, RTC_GPIO_MODE_INPUT_ONLY);
   esp_sleep_enable_ext0_wakeup((gpio_num_t)SLEEP_WAKE_PIN, 0);  // Wake on LOW
 
   esp_deep_sleep_start();
@@ -1084,6 +1080,11 @@ void setup() {
   // Workload is very light - 40 MHz is more than sufficient
   setCpuFrequencyMhz(40);
   Serial.println("CPU frequency: 40 MHz");
+
+  // If waking from deep sleep, restore wake pin from RTC domain to digital GPIO
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+    rtc_gpio_deinit((gpio_num_t)SLEEP_WAKE_PIN);
+  }
 
   // GPIO initialization
   pinMode(BTN_TOP, INPUT);
