@@ -29,6 +29,7 @@ Buttons:
       * Input-only pin
       * NO internal pull-up (external pull-up required)
       * Used for increment + deep-sleep wake (EXT0, active LOW)
+      * Wake requires rtc_gpio_init() — see enterDeepSleep()
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
       * Used for decrement + long-hold sleep entry
@@ -1004,7 +1005,13 @@ void bootAnimationSprite() {
 /* --------------------------------------------------------------
    Deep sleep entry
 
-   Wake source: SLEEP_WAKE_PIN via EXT0 wakeup on LOW.
+   Wake source: SLEEP_WAKE_PIN (GPIO 35) via EXT0 wakeup on LOW.
+   GPIO 35 is input-only with no internal pull-up; it must be
+   explicitly switched to the RTC domain via rtc_gpio_init() so the
+   RTC controller can monitor the pad level during deep sleep.
+   Without this, the pad stays in the digital domain and ext0 never
+   fires. On wake, setup() calls rtc_gpio_deinit() to restore
+   normal digitalRead() operation.
    Backlight is held LOW during sleep to prevent MOSFET float.
    -------------------------------------------------------------- */
 
@@ -1049,6 +1056,20 @@ void setup() {
   delay(100);
   Serial.println("\n=== TENSTAR T-Display Counter Starting ===");
 
+  // Wake-cause diagnostics (helpful for confirming EXT0 wake vs reset)
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  switch (wakeCause) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("Wake cause: EXT0 (button press)");
+      break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+      Serial.println("Wake cause: power-on / reset");
+      break;
+    default:
+      Serial.printf("Wake cause: %d\n", (int)wakeCause);
+      break;
+  }
+
   // Initialize SPIFFS for calibration data storage
   if (!SPIFFS.begin(true)) {
     Serial.println("ERROR: SPIFFS mount failed");
@@ -1082,7 +1103,7 @@ void setup() {
   Serial.println("CPU frequency: 40 MHz");
 
   // If waking from deep sleep, restore wake pin from RTC domain to digital GPIO
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+  if (wakeCause == ESP_SLEEP_WAKEUP_EXT0) {
     rtc_gpio_deinit((gpio_num_t)SLEEP_WAKE_PIN);
   }
 
