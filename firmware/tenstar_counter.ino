@@ -28,10 +28,17 @@ Buttons:
   - TOP button    → GPIO35
       * Input-only pin
       * NO internal pull-up (external pull-up required)
+<<<<<<< codex/optimize-battery-sampling-and-logging
       * Used for increment + deep-sleep wake (EXT0, active LOW)
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
       * Used for decrement + long-hold sleep entry
+=======
+      * Used for increment
+  - BOTTOM button → GPIO0
+      * Internal pull-up enabled
+      * Used for decrement + long-hold sleep entry + deep-sleep wake (EXT0, active LOW)
+>>>>>>> main
 
 Battery:
   - ADC pin → GPIO34
@@ -100,7 +107,11 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
+<<<<<<< codex/optimize-battery-sampling-and-logging
 #define SLEEP_WAKE_PIN BTN_TOP  // EXT0 wake source (active LOW). Set to BTN_BOTTOM if preferred.
+=======
+#define SLEEP_WAKE_PIN BTN_BOTTOM  // EXT0 wake source (active LOW). Set to BTN_TOP if preferred.
+>>>>>>> main
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
