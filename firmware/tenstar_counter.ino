@@ -45,8 +45,8 @@ Other:
 Firmware Notes:
   - No brightness menu, no PWM dimming (unreliable on this board).
   - Backlight is ON during operation.
-  - Long-hold on bottom button enters deep sleep with wake sources disabled.
-  - Device remains off until external reset/power-cycle.
+  - Long-hold on bottom button enters deep sleep with EXT0 wake enabled on GPIO0.
+  - Pressing bottom button wakes the board; no side reset needed.
   - Backlight polarity: HIGH = ON, LOW = OFF (ACTIVE HIGH)
 
 Power Optimizations:
@@ -75,6 +75,24 @@ Charging Detection:
 */
 
 /*
+  Deep-sleep / wake strategy note (current effort)
+  ------------------------------------------------
+  Goal: keep long-hold "off" behavior while still allowing user wake
+  without the removed side reset button.
+
+  Implemented strategy:
+  - Enter deep sleep on long hold.
+  - Keep backlight latched OFF during sleep.
+  - Enable EXT0 wake on bottom button GPIO0 (active LOW).
+
+  Why this pin:
+  - EXT0 supports one wake pin on classic ESP32.
+  - GPIO0 has an internal pull-up, making LOW-edge button wake robust.
+  - Top button GPIO35 has no internal pull-up, so it is less reliable
+    as the sole deep-sleep wake source without extra hardware biasing.
+*/
+
+/*
   Tenstar ESP32 Modern Counter - Production Firmware
   --------------------------------------------------
   Boot sequence: white mask → BL off → clear to black → render first frame → BL on
@@ -92,6 +110,7 @@ Charging Detection:
 #include "esp_adc_cal.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "SPIFFS.h"
 #include "FS.h"
 
@@ -101,6 +120,7 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
+#define SLEEP_WAKE_PIN BTN_BOTTOM  // Proven EXT0 wake source: GPIO0 (active LOW)
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
@@ -118,7 +138,7 @@ static const int SCREEN_H = 135;  // Display height after rotation=1
 
 // Button timing
 static const unsigned long BUTTON_SHORT_PRESS_MAX_MS = 800;   // Max duration for short press
-static const unsigned long BUTTON_LONG_PRESS_MIN_MS  = 2000;  // Min hold duration for power-off (deep sleep)
+static const unsigned long BUTTON_LONG_PRESS_MIN_MS  = 2000;  // Min hold duration before deep-sleep entry
 
 // UI behavior timing
 static const unsigned long LOCK_DELAY_MS = 5000;  // Idle time before max value locks
@@ -401,7 +421,8 @@ static void renderBatteryStrip();
 void bootAnimationSprite();
 static void showBootWhiteMaskHardCut(uint16_t holdMs);
 
-void enterDeepSleep();  // Power-off path: deep sleep with wake sources disabled
+static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel);
+void enterDeepSleep();  // Deep sleep with EXT0 wake enabled on GPIO0 (bottom button)
 
 /* --------------------------------------------------------------
    Pre-setup backlight kill (prevents flash on power-up)
@@ -1001,17 +1022,42 @@ void bootAnimationSprite() {
 }
 
 /* --------------------------------------------------------------
-   Long-hold power-off entry (deep sleep)
+   EXT0 wake pin configuration
 
-   Puts device into deep sleep with all wake sources disabled so
-   releasing the button does not restart the firmware. Device will
-   remain off until hard reset / power-cycle.
+   Based on common ESP32 deep-sleep fixes used in production repos:
+   configure the wake pin in RTC domain immediately before sleep so
+   pull state remains valid while digital GPIO domain is powered down.
+
+   wakeLevel = 0 => keep pull-up enabled, wake when button pulls LOW.
+   -------------------------------------------------------------- */
+
+static void configureWakePinForExt0(gpio_num_t wakePin, int wakeLevel) {
+  rtc_gpio_deinit(wakePin);
+  rtc_gpio_init(wakePin);
+  rtc_gpio_set_direction(wakePin, RTC_GPIO_MODE_INPUT_ONLY);
+
+  if (wakeLevel == 0) {
+    rtc_gpio_pullup_en(wakePin);
+    rtc_gpio_pulldown_dis(wakePin);
+  } else {
+    rtc_gpio_pullup_dis(wakePin);
+    rtc_gpio_pulldown_en(wakePin);
+  }
+}
+
+/* --------------------------------------------------------------
+   Long-hold deep-sleep entry with wake enabled
+
+   Wake source is intentionally NOT disabled:
+   - Bottom button (GPIO0) wakes via EXT0 on LOW
+   - Top button (GPIO35) is not used for wake because EXT0 accepts a
+     single RTC pin and GPIO35 has no internal pull-up on this board.
    -------------------------------------------------------------- */
 
 void enterDeepSleep() {
   tft.fillScreen(TFT_BLACK);
 
-  // Avoid repeat triggers while button is still held.
+  // Avoid instant wake re-trigger if user is still holding a button.
   while (digitalRead(BTN_TOP) == LOW || digitalRead(BTN_BOTTOM) == LOW) {
     delay(10);
     yield();
@@ -1026,8 +1072,11 @@ void enterDeepSleep() {
   gpio_hold_en((gpio_num_t)TFT_BL);
   gpio_deep_sleep_hold_en();
 
-  // Disable all wake sources so the board remains off.
+  // Reconfigure wake sources and enable EXT0 on bottom button.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  configureWakePinForExt0((gpio_num_t)SLEEP_WAKE_PIN, 0);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)SLEEP_WAKE_PIN, 0);
+
   esp_deep_sleep_start();
 }
 
@@ -1043,6 +1092,11 @@ void setup() {
 
   esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
   Serial.printf("Wake cause: %d\n", (int)wakeCause);
+
+  if (wakeCause == ESP_SLEEP_WAKEUP_EXT0) {
+    // Return wake pin from RTC domain to normal digital GPIO control.
+    rtc_gpio_deinit((gpio_num_t)SLEEP_WAKE_PIN);
+  }
 
   // Initialize SPIFFS for calibration data storage
   if (!SPIFFS.begin(true)) {
