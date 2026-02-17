@@ -28,17 +28,16 @@ Buttons:
   - TOP button    → GPIO35
       * Input-only pin
       * NO internal pull-up (external pull-up required)
-<<<<<<< codex/optimize-battery-sampling-and-logging
-      * Used for increment + deep-sleep wake (EXT0, active LOW)
+      * Used for increment + deep-sleep wake (EXT1, active LOW)
+      * 10K pull-up on PCB is powered from V3V rail, which Q6 MOSFET
+        disconnects on battery when PWR_EN drops during deep sleep.
+        EXT1 (ALL_LOW mode) is robust to this because the RTC controller
+        detects the button's hard short to GND even without a pull-up.
   - BOTTOM button → GPIO0
       * Internal pull-up enabled
       * Used for decrement + long-hold sleep entry
-=======
-      * Used for increment
-  - BOTTOM button → GPIO0
-      * Internal pull-up enabled
-      * Used for decrement + long-hold sleep entry + deep-sleep wake (EXT0, active LOW)
->>>>>>> main
+      * NOT used for wake (GPIO0 is a strapping pin — holding it
+        LOW during the post-wake reset enters UART download mode)
 
 Battery:
   - ADC pin → GPIO34
@@ -51,8 +50,8 @@ Other:
 
 Firmware Notes:
   - No brightness menu, no PWM dimming (unreliable on this board).
-  - Backlight is ON during operation, forced OFF + GPIO-hold in deep sleep.
-  - GPIO4 is held LOW during deep sleep so the BL MOSFET cannot float ON.
+  - Backlight is ON during operation, isolated via rtc_gpio_isolate() in deep sleep.
+  - GPIO4 is isolated during deep sleep so the BL MOSFET gate is fully disconnected.
   - Backlight polarity: HIGH = ON, LOW = OFF (ACTIVE HIGH)
 
 Power Optimizations:
@@ -98,6 +97,7 @@ Charging Detection:
 #include "esp_adc_cal.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "SPIFFS.h"
 #include "FS.h"
 
@@ -107,11 +107,8 @@ Charging Detection:
 
 #define BTN_TOP        35  // Input-only, external pull-up required
 #define BTN_BOTTOM     0   // Boot pin, internal pull-up enabled
-<<<<<<< codex/optimize-battery-sampling-and-logging
-#define SLEEP_WAKE_PIN BTN_TOP  // EXT0 wake source (active LOW). Set to BTN_BOTTOM if preferred.
-=======
-#define SLEEP_WAKE_PIN BTN_BOTTOM  // EXT0 wake source (active LOW). Set to BTN_TOP if preferred.
->>>>>>> main
+#define SLEEP_WAKE_PIN BTN_TOP  // EXT1 wake source (active LOW)
+#define SLEEP_WAKE_BITMASK  ((uint64_t)1 << SLEEP_WAKE_PIN)  // EXT1 bitmask for GPIO 35
 #define BAT_ADC_PIN    34  // Input-only ADC pin
 #define TFT_BL         4   // Backlight MOSFET control (ACTIVE HIGH)
 #define LED_PIN        2   // Onboard status LED
@@ -1014,8 +1011,33 @@ void bootAnimationSprite() {
 /* --------------------------------------------------------------
    Deep sleep entry
 
-   Wake source: SLEEP_WAKE_PIN via EXT0 wakeup on LOW.
-   Backlight is held LOW during sleep to prevent MOSFET float.
+   Wake source: SLEEP_WAKE_PIN (GPIO 35) via EXT1 wakeup (ALL_LOW).
+
+   Why EXT1 instead of EXT0:
+   1. EXT0 uses the RTC_IO peripheral, which forces the entire
+      RTC_PERIPH power domain to stay on during sleep (+~2 mA).
+      EXT1 uses the RTC controller directly and works with
+      RTC_PERIPH powered down.
+   2. The T-Display's V3V rail (which feeds the 10K pull-up on
+      GPIO 35) is gated by MOSFET Q6. On battery power, Q6 opens
+      when PWR_EN drops during deep sleep, so the pull-up loses
+      power and the pin floats. EXT0 is level-sensitive via
+      RTC_IO and needs a clean HIGH-to-LOW edge from the pull-up;
+      with the pull-up unpowered it never fires. EXT1 ALL_LOW mode
+      latches when the pin IS low — the button's hard short to GND
+      is enough even without a pull-up reference.
+   3. gpio_deep_sleep_hold_en() (used previously for the backlight)
+      is a GLOBAL lock that freezes the IO_MUX config of every
+      digital pad. This can prevent rtc_gpio_init() from moving
+      GPIO 35 into the RTC domain. Replacing it with per-pin
+      rtc_gpio_isolate() on GPIO 4 avoids the conflict entirely.
+
+   Backlight (GPIO 4, RTC_GPIO10):
+   Isolated via rtc_gpio_isolate() which disconnects the pad from
+   all internal circuitry (input, output, pull-up, pull-down) and
+   enables hold. The MOSFET gate floats disconnected → backlight
+   stays off with zero leakage. On wake, setup() calls
+   rtc_gpio_hold_dis() + rtc_gpio_deinit() to restore normal GPIO.
    -------------------------------------------------------------- */
 
 void enterDeepSleep() {
@@ -1030,15 +1052,19 @@ void enterDeepSleep() {
   backlightOff();
   delay(SLEEP_ENTRY_DELAY_MS);
 
-  // Configure GPIO hold to maintain backlight OFF state
-  gpio_hold_dis((gpio_num_t)TFT_BL);
-  gpio_deep_sleep_hold_dis();
-  gpio_hold_en((gpio_num_t)TFT_BL);
-  gpio_deep_sleep_hold_en();
+  // Isolate backlight pin (GPIO 4 / RTC_GPIO10).
+  // rtc_gpio_isolate() disconnects the pad from all internal circuitry
+  // and enables hold — the MOSFET gate cannot float ON.
+  // This replaces the old gpio_hold_en + gpio_deep_sleep_hold_en approach
+  // which applied a GLOBAL IO_MUX freeze that could prevent the wake pin
+  // from switching to the RTC domain.
+  rtc_gpio_isolate((gpio_num_t)TFT_BL);
 
-  // Configure wake source
+  // Configure EXT1 wake source on GPIO 35.
+  // ALL_LOW mode: the RTC controller latches wake when the pin IS low.
+  // This is robust even when the V3V pull-up rail is unpowered on battery.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)SLEEP_WAKE_PIN, 0);  // Wake on LOW
+  esp_sleep_enable_ext1_wakeup(SLEEP_WAKE_BITMASK, ESP_EXT1_WAKEUP_ALL_LOW);
 
   esp_deep_sleep_start();
 }
@@ -1052,6 +1078,23 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("\n=== TENSTAR T-Display Counter Starting ===");
+
+  // Wake-cause diagnostics (helpful for confirming EXT1 wake vs reset)
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  switch (wakeCause) {
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("Wake cause: EXT1 (button press)");
+      break;
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("Wake cause: EXT0 (legacy)");
+      break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+      Serial.println("Wake cause: power-on / reset");
+      break;
+    default:
+      Serial.printf("Wake cause: %d\n", (int)wakeCause);
+      break;
+  }
 
   // Initialize SPIFFS for calibration data storage
   if (!SPIFFS.begin(true)) {
@@ -1084,6 +1127,12 @@ void setup() {
   // Workload is very light - 40 MHz is more than sufficient
   setCpuFrequencyMhz(40);
   Serial.println("CPU frequency: 40 MHz");
+
+  // If waking from deep sleep, restore isolated backlight pin to normal GPIO
+  if (wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
+    rtc_gpio_hold_dis((gpio_num_t)TFT_BL);
+    rtc_gpio_deinit((gpio_num_t)TFT_BL);
+  }
 
   // GPIO initialization
   pinMode(BTN_TOP, INPUT);
